@@ -1,0 +1,4 @@
+name: MaceLimit
+version: 1.0
+main: com.example.macelimit.MaceLimit
+api-version: '26.3'
