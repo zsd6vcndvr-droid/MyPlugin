@@ -1,5 +1,6 @@
 package com.example.macelimit;
 
+import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -13,11 +14,11 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.CrafterCraftEvent;
 import org.bukkit.event.entity.EntityCombustEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
-import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.ItemSpawnEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.PrepareItemCraftEvent;
+import org.bukkit.event.server.ServerLoadEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
@@ -90,6 +91,27 @@ public class MaceLimit extends JavaPlugin implements Listener {
         return true;
     }
 
+    // === БЕЛЫЙ СПИСОК ===
+
+    @EventHandler
+    public void onServerLoad(ServerLoadEvent event) {
+        if (event.getType() != ServerLoadEvent.LoadType.STARTUP) return;
+
+        if (!Bukkit.getWhitelist()) {
+            Bukkit.setWhitelist(true);
+            getLogger().info("Белый список принудительно включён при старте.");
+        }
+
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            if (!Bukkit.getWhitelist()) {
+                Bukkit.setWhitelist(true);
+                getLogger().info("Белый список был выключен — включён повторно.");
+            }
+        }, 600L, 600L);
+    }
+
+    // === ЛОГИКА КРАФТА ===
+
     private boolean isOnCooldown(Player p) {
         Long until = cooldowns.get(p.getUniqueId());
         if (until == null) return false;
@@ -122,7 +144,8 @@ public class MaceLimit extends JavaPlugin implements Listener {
         if (item == null || item.getType() != Material.MACE) return;
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
-            meta.getPersistentDataContainer().set(maceKey, PersistentDataType.STRING, creator.getUniqueId().toString());
+            meta.getPersistentDataContainer().set(maceKey, PersistentDataType.STRING,
+                    creator.getUniqueId().toString());
             item.setItemMeta(meta);
         }
     }
@@ -212,13 +235,12 @@ public class MaceLimit extends JavaPlugin implements Listener {
         }
     }
 
-    // === ЗАЩИТА БУЛАВЫ ОТ УНИЧТОЖЕНИЯ ===
+    // === ЗАЩИТА БУЛАВЫ ===
 
     @EventHandler
     public void onItemSpawn(ItemSpawnEvent event) {
         Item item = event.getEntity();
-        ItemStack stack = item.getItemStack();
-        if (isMarkedMace(stack)) {
+        if (isMarkedMace(item.getItemStack())) {
             item.setInvulnerable(true);
             item.setUnlimitedLifetime(true);
             item.setWillAge(false);
@@ -243,14 +265,7 @@ public class MaceLimit extends JavaPlugin implements Listener {
         }
     }
 
-    @EventHandler
-    public void onExplode(EntityExplodeEvent event) {
-        // Удаляем булавы из списка уничтожаемых предметов
-        event.blockList().removeIf(block -> false); // блоки не трогаем
-        // Для сущностей в зоне взрыва — отменяем урон им (обрабатывается в onItemDamage)
-    }
-
-    // === ОБРАБОТКА СМЕРТИ ===
+    // === СМЕРТЬ ИГРОКА ===
 
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent event) {
@@ -258,40 +273,57 @@ public class MaceLimit extends JavaPlugin implements Listener {
         Player killer = victim.getKiller();
 
         List<ItemStack> macesInInventory = new ArrayList<>();
-        for (ItemStack item : victim.getInventory().getContents()) {
-            if (isMarkedMace(item)) {
-                macesInInventory.add(item);
+        for (int i = 0; i < victim.getInventory().getSize(); i++) {
+            ItemStack slot = victim.getInventory().getItem(i);
+            if (isMarkedMace(slot)) {
+                macesInInventory.add(slot.clone());
+                victim.getInventory().setItem(i, null);
             }
         }
 
         if (macesInInventory.isEmpty()) return;
 
-        // Убираем булавы из дропа, чтобы они не выпали на землю
-        for (ItemStack mace : macesInInventory) {
-            event.getDrops().remove(mace);
-            victim.getInventory().remove(mace);
-        }
+        event.getDrops().removeIf(this::isMarkedMace);
 
         if (killer != null && !killer.equals(victim)) {
-            // Убийца — игрок: передаём булаву ему
             for (ItemStack mace : macesInInventory) {
                 Map<Integer, ItemStack> leftover = killer.getInventory().addItem(mace);
-                if (!leftover.isEmpty()) {
-                    // Инвентарь полон — кладём в эндер-сундук
-                    killer.getEnderChest().addItem(leftover.values().toArray(new ItemStack[0]));
+
+                if (leftover.isEmpty()) {
+                    killer.sendMessage(ChatColor.GOLD + "[MaceLimit] " + ChatColor.WHITE
+                            + "Вы получили булаву убитого игрока!");
+                    continue;
+                }
+
+                Map<Integer, ItemStack> chestLeftover = killer.getEnderChest().addItem(
+                        leftover.values().toArray(new ItemStack[0]));
+
+                if (chestLeftover.isEmpty()) {
                     killer.sendMessage(ChatColor.GOLD + "[MaceLimit] " + ChatColor.WHITE
                             + "Инвентарь полон — булава отправлена в эндер-сундук.");
+                } else {
+                    for (ItemStack drop : chestLeftover.values()) {
+                        victim.getWorld().dropItemNaturally(victim.getLocation(), drop);
+                    }
+                    killer.sendMessage(ChatColor.RED + "[MaceLimit] Инвентарь и эндер-сундук полны — "
+                            + "булава выпала на землю.");
                 }
-                killer.sendMessage(ChatColor.GOLD + "[MaceLimit] " + ChatColor.WHITE
-                        + "Вы получили булаву убитого игрока!");
             }
         } else {
-            // Смерть не от игрока: булава идёт в эндер-сундук владельца
             for (ItemStack mace : macesInInventory) {
-                victim.getEnderChest().addItem(mace);
+                Map<Integer, ItemStack> leftover = victim.getEnderChest().addItem(mace);
+
+                if (!leftover.isEmpty()) {
+                    for (ItemStack drop : leftover.values()) {
+                        victim.getWorld().dropItemNaturally(victim.getLocation(), drop);
+                    }
+                    victim.sendMessage(ChatColor.RED + "[MaceLimit] Эндер-сундук полон — "
+                            + "булава выпала на месте смерти.");
+                } else {
+                    victim.sendMessage(ChatColor.GOLD + "[MaceLimit] " + ChatColor.WHITE
+                            + "Ваша булава сохранена в эндер-сундуке.");
+                }
             }
-            victim.sendMessage(ChatColor.GOLD + "[MaceLimit] " + ChatColor.WHITE
-                    + "Ваша булава сохранена в эндер-сундуке.");
         }
     }
 }
