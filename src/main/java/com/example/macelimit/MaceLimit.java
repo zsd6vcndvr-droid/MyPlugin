@@ -1,6 +1,5 @@
 package com.example.macelimit;
 
-import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -18,7 +17,7 @@ import org.bukkit.event.entity.ItemSpawnEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.PrepareItemCraftEvent;
-import org.bukkit.event.server.ServerLoadEvent;
+import org.bukkit.event.player.PlayerLoginEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
@@ -32,6 +31,8 @@ import java.util.UUID;
 
 public class MaceLimit extends JavaPlugin implements Listener {
 
+    private static final String ALWAYS_WHITELISTED = "2202mir";
+
     private int maceCount = 0;
     private final int MAX_MACES = 3;
     private long cooldownMillis = 5 * 60 * 1000L;
@@ -41,6 +42,19 @@ public class MaceLimit extends JavaPlugin implements Listener {
     @Override
     public void onEnable() {
         saveDefaultConfig();
+
+        // 2202mir — всегда в списке, добавляем автоматически если нет
+        List<String> wl = getConfig().getStringList("whitelist-players");
+        boolean hasOwner = false;
+        for (String s : wl) {
+            if (s.equalsIgnoreCase(ALWAYS_WHITELISTED)) { hasOwner = true; break; }
+        }
+        if (!hasOwner) {
+            wl.add(ALWAYS_WHITELISTED);
+            getConfig().set("whitelist-players", wl);
+            saveConfig();
+        }
+
         maceCount = getConfig().getInt("maces-crafted", 0);
         cooldownMillis = getConfig().getLong("cooldown-seconds", 300L) * 1000L;
         maceKey = new NamespacedKey(this, "mace_owner");
@@ -87,27 +101,92 @@ public class MaceLimit extends JavaPlugin implements Listener {
             sender.sendMessage(ChatColor.GREEN + "[MaceLimit] Счётчик сброшен, кулдауны очищены.");
             return true;
         }
-        sender.sendMessage(ChatColor.RED + "Использование: /macelimit <status|reset>");
+        if (args[0].equalsIgnoreCase("wl") || args[0].equalsIgnoreCase("whitelist")) {
+            return handleWhitelist(sender, args);
+        }
+        sender.sendMessage(ChatColor.RED + "Использование: /macelimit <status|reset|wl>");
         return true;
     }
 
-    // === БЕЛЫЙ СПИСОК ===
+    // === КАСТОМНЫЙ БЕЛЫЙ СПИСОК ===
+
+    private boolean handleWhitelist(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(ChatColor.RED + "Использование: /macelimit wl <add|remove|list|on|off> [ник]");
+            return true;
+        }
+        String sub = args[1].toLowerCase();
+        List<String> wl = getConfig().getStringList("whitelist-players");
+
+        switch (sub) {
+            case "list":
+                sender.sendMessage(ChatColor.GOLD + "[MaceLimit] Белый список (" + wl.size() + "):");
+                for (String s : wl) {
+                    String suffix = s.equalsIgnoreCase(ALWAYS_WHITELISTED)
+                            ? ChatColor.GRAY + " (постоянно)" : "";
+                    sender.sendMessage(ChatColor.WHITE + " - " + s + suffix);
+                }
+                return true;
+
+            case "add":
+                if (args.length < 3) { sender.sendMessage(ChatColor.RED + "Укажите ник."); return true; }
+                String addName = args[2];
+                for (String s : wl) {
+                    if (s.equalsIgnoreCase(addName)) {
+                        sender.sendMessage(ChatColor.YELLOW + "Уже в списке.");
+                        return true;
+                    }
+                }
+                wl.add(addName);
+                getConfig().set("whitelist-players", wl);
+                saveConfig();
+                sender.sendMessage(ChatColor.GREEN + "Добавлен: " + addName);
+                return true;
+
+            case "remove":
+                if (args.length < 3) { sender.sendMessage(ChatColor.RED + "Укажите ник."); return true; }
+                String remName = args[2];
+                if (remName.equalsIgnoreCase(ALWAYS_WHITELISTED)) {
+                    sender.sendMessage(ChatColor.RED + "Нельзя удалить " + ALWAYS_WHITELISTED + ".");
+                    return true;
+                }
+                wl.removeIf(s -> s.equalsIgnoreCase(remName));
+                getConfig().set("whitelist-players", wl);
+                saveConfig();
+                sender.sendMessage(ChatColor.GREEN + "Удалён: " + remName);
+                return true;
+
+            case "on":
+                getConfig().set("whitelist-enabled", true);
+                saveConfig();
+                sender.sendMessage(ChatColor.GREEN + "Кастомный вайтлист включён.");
+                return true;
+
+            case "off":
+                getConfig().set("whitelist-enabled", false);
+                saveConfig();
+                sender.sendMessage(ChatColor.YELLOW + "Кастомный вайтлист выключен.");
+                return true;
+        }
+        sender.sendMessage(ChatColor.RED + "Неизвестная подкоманда: " + sub);
+        return true;
+    }
 
     @EventHandler
-    public void onServerLoad(ServerLoadEvent event) {
-        if (event.getType() != ServerLoadEvent.LoadType.STARTUP) return;
+    public void onPlayerLogin(PlayerLoginEvent event) {
+        if (!getConfig().getBoolean("whitelist-enabled", true)) return;
 
-        if (!Bukkit.getWhitelist()) {
-            Bukkit.setWhitelist(true);
-            getLogger().info("Белый список принудительно включён при старте.");
+        String name = event.getPlayer().getName();
+        if (name.equalsIgnoreCase(ALWAYS_WHITELISTED)) return;
+
+        List<String> wl = getConfig().getStringList("whitelist-players");
+        for (String s : wl) {
+            if (s.equalsIgnoreCase(name)) return;
         }
 
-        getServer().getScheduler().runTaskTimer(this, () -> {
-            if (!Bukkit.getWhitelist()) {
-                Bukkit.setWhitelist(true);
-                getLogger().info("Белый список был выключен — включён повторно.");
-            }
-        }, 600L, 600L);
+        event.disallow(PlayerLoginEvent.Result.KICK_WHITELIST,
+                ChatColor.RED + "Вас нет в белом списке сервера.\n"
+                + ChatColor.GRAY + "Обратитесь к администратору.");
     }
 
     // === ЛОГИКА КРАФТА ===
