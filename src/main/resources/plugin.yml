@@ -1,4 +1,10 @@
 name: MaceLimit
-version: 1.0
+version: 1.2
 main: com.example.macelimit.MaceLimit
 api-version: '26.3'
+commands:
+  macelimit:
+    description: Управление лимитом булав
+    usage: /macelimit <status|reset>
+    aliases: [ml, macelim]
+    permission: macelimit.admin
